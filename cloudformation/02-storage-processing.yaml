@@ -1,0 +1,582 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Complete storage, processing, and database stack for Video Streaming App'
+
+Parameters:
+  AppName:
+    Type: String
+    Default: VideoStreamingApp
+    Description: Name of the application
+
+Resources:
+  # DynamoDB table for video metadata
+  VideoMetadataTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AppName}-VideoMetadata'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: videoId
+          AttributeType: S
+        - AttributeName: uploadDate
+          AttributeType: S
+        - AttributeName: status
+          AttributeType: S
+      KeySchema:
+        - AttributeName: videoId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: StatusIndex
+          KeySchema:
+            - AttributeName: status
+              KeyType: HASH
+            - AttributeName: uploadDate
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: UploadDateIndex
+          KeySchema:
+            - AttributeName: uploadDate
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - Key: Project
+          Value: !Ref AppName
+        - Key: Purpose
+          Value: VideoMetadata
+  # S3 Bucket for video uploads
+  UploadBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'videostreamingapp-video-uploads-${AWS::AccountId}'
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [GET, PUT, POST, DELETE, HEAD]
+            AllowedOrigins: ['*']
+            MaxAge: 3000
+
+  # S3 Bucket for processed video content
+  ContentBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'videostreamingapp-video-content-${AWS::AccountId}'
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [GET, HEAD]
+            AllowedOrigins: ['*']
+            MaxAge: 3000
+
+  # S3 Bucket for web hosting (private - served via CloudFront)
+  WebBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'videostreamingapp-web-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # CloudFront Origin Access Control (replaces deprecated OAI)
+  CloudFrontOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub '${AppName}-OAC'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+        Description: !Sub 'Origin Access Control for ${AppName}'
+
+  # CloudFront Distribution
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: !Sub '${AppName} Content Distribution'
+        DefaultRootObject: index.html
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 300
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 300
+        DefaultCacheBehavior:
+          TargetOriginId: WebOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachedMethods:
+            - GET
+            - HEAD
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+        CacheBehaviors:
+          - PathPattern: '/free/*'
+            TargetOriginId: ContentOrigin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - GET
+              - HEAD
+            CachedMethods:
+              - GET
+              - HEAD
+            ForwardedValues:
+              QueryString: true
+              Headers:
+                - Authorization
+          - PathPattern: '/standard/*'
+            TargetOriginId: ContentOrigin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - GET
+              - HEAD
+            CachedMethods:
+              - GET
+              - HEAD
+            ForwardedValues:
+              QueryString: true
+              Headers:
+                - Authorization
+          - PathPattern: '/premium/*'
+            TargetOriginId: ContentOrigin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - GET
+              - HEAD
+            CachedMethods:
+              - GET
+              - HEAD
+            ForwardedValues:
+              QueryString: true
+              Headers:
+                - Authorization
+          - PathPattern: '/thumbnails/*'
+            TargetOriginId: ContentOrigin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - GET
+              - HEAD
+            CachedMethods:
+              - GET
+              - HEAD
+            ForwardedValues:
+              QueryString: false
+            DefaultTTL: 86400
+            MaxTTL: 31536000
+        Enabled: true
+        Origins:
+          - Id: WebOrigin
+            DomainName: !GetAtt WebBucket.RegionalDomainName
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+            OriginAccessControlId: !GetAtt CloudFrontOriginAccessControl.Id
+          - Id: ContentOrigin
+            DomainName: !GetAtt ContentBucket.RegionalDomainName
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+            OriginAccessControlId: !GetAtt CloudFrontOriginAccessControl.Id
+        PriceClass: PriceClass_100
+
+  # Bucket policy for CloudFront access to web bucket
+  WebBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebBucket
+      PolicyDocument:
+        Statement:
+          - Sid: AllowCloudFrontAccess
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub 'arn:aws:s3:::videostreamingapp-web-${AWS::AccountId}/*'
+            Condition:
+              StringEquals:
+                'AWS:SourceArn': !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}'
+
+  # Bucket policy for CloudFront access to content bucket
+  ContentBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ContentBucket
+      PolicyDocument:
+        Statement:
+          - Sid: AllowCloudFrontAccess
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub 'arn:aws:s3:::videostreamingapp-video-content-${AWS::AccountId}/*'
+            Condition:
+              StringEquals:
+                'AWS:SourceArn': !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}'
+
+  # MediaConvert Role
+  MediaConvertRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AppName}-MediaConvertRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: mediaconvert.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSElementalMediaConvertFullAccess
+      Policies:
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource:
+                  - !Sub '${UploadBucket.Arn}/*'
+                  - !Sub '${ContentBucket.Arn}/*'
+
+  # Lambda Role for MediaConvert Job Creation
+  MediaConvertLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AppName}-MediaConvertLambdaRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: MediaConvertAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - mediaconvert:CreateJob
+                  - mediaconvert:GetJob
+                  - mediaconvert:ListJobs
+                  - mediaconvert:DescribeEndpoints
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: !GetAtt MediaConvertRole.Arn
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt UploadBucket.Arn
+                  - !Sub '${UploadBucket.Arn}/*'
+                  - !GetAtt ContentBucket.Arn
+                  - !Sub '${ContentBucket.Arn}/*'
+# No DynamoDB access needed - only creates MediaConvert jobs
+
+  # Lambda Function for MediaConvert Job Creation
+  MediaConvertJobLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AppName}-MediaConvertJob'
+      Runtime: python3.9
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt MediaConvertLambdaRole.Arn
+      Timeout: 300
+      Environment:
+        Variables:
+          OUTPUT_BUCKET: !Ref ContentBucket
+          MEDIACONVERT_ROLE: !GetAtt MediaConvertRole.Arn
+          AWS_ACCOUNT_ID: !Ref AWS::AccountId
+      Code:
+        S3Bucket: !ImportValue 
+          Fn::Sub: '${AppName}-LambdaDeploymentBucket'
+        S3Key: lambda-packages/video-processor.zip
+
+  # Lambda permission for S3 to invoke MediaConvert function
+  MediaConvertLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref MediaConvertJobLambda
+      Action: lambda:InvokeFunction
+      Principal: s3.amazonaws.com
+      SourceArn: !GetAtt UploadBucket.Arn
+
+  # Lambda function to configure S3 bucket notifications
+  S3NotificationConfigFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AppName}-S3NotificationConfig'
+      Runtime: python3.9
+      Handler: index.lambda_handler
+      Role: !GetAtt S3NotificationConfigRole.Arn
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import cfnresponse
+          
+          def lambda_handler(event, context):
+              try:
+                  s3_client = boto3.client('s3')
+                  
+                  bucket_name = event['ResourceProperties']['BucketName']
+                  lambda_arn = event['ResourceProperties']['LambdaFunctionArn']
+                  notification_id = event['ResourceProperties']['NotificationId']
+                  
+                  if event['RequestType'] == 'Create' or event['RequestType'] == 'Update':
+                      # Configure bucket notification
+                      notification_config = {
+                          'LambdaFunctionConfigurations': [
+                              {
+                                  'Id': notification_id,
+                                  'LambdaFunctionArn': lambda_arn,
+                                  'Events': ['s3:ObjectCreated:*'],
+                                  'Filter': {
+                                      'Key': {
+                                          'FilterRules': [
+                                              {
+                                                  'Name': 'suffix',
+                                                  'Value': '.mp4'
+                                              }
+                                          ]
+                                      }
+                                  }
+                              }
+                          ]
+                      }
+                      
+                      s3_client.put_bucket_notification_configuration(
+                          Bucket=bucket_name,
+                          NotificationConfiguration=notification_config
+                      )
+                      
+                  elif event['RequestType'] == 'Delete':
+                      # Remove notification configuration
+                      s3_client.put_bucket_notification_configuration(
+                          Bucket=bucket_name,
+                          NotificationConfiguration={}
+                      )
+                  
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  
+              except Exception as e:
+                  print(f"Error: {str(e)}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {})
+
+  # IAM Role for S3 notification configuration Lambda
+  S3NotificationConfigRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AppName}-S3NotificationConfigRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: S3NotificationConfigPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetBucketNotification
+                  - s3:PutBucketNotification
+                Resource: !GetAtt UploadBucket.Arn
+
+  # Custom resource to configure S3 bucket notification
+  S3BucketNotificationCustomResource:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn: MediaConvertLambdaInvokePermission
+    Properties:
+      ServiceToken: !GetAtt S3NotificationConfigFunction.Arn
+      BucketName: !Ref UploadBucket
+      LambdaFunctionArn: !GetAtt MediaConvertJobLambda.Arn
+      NotificationId: VideoProcessingTrigger
+
+  # Lambda Role for MediaConvert Completion Handler
+  MediaConvertCompletionLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AppName}-MediaConvertCompletionLambdaRole'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:GetItem
+                  - dynamodb:Scan
+                Resource:
+                  - !GetAtt VideoMetadataTable.Arn
+                  - !Sub '${VideoMetadataTable.Arn}/index/*'
+
+
+  # Lambda Function for MediaConvert Job Completion Handler
+  MediaConvertCompletionLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AppName}-MediaConvertCompletion'
+      Runtime: python3.9
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt MediaConvertCompletionLambdaRole.Arn
+      Timeout: 300
+      Environment:
+        Variables:
+          DYNAMODB_TABLE_NAME: !Ref VideoMetadataTable
+          OUTPUT_BUCKET: !Ref ContentBucket
+          CLOUDFRONT_DOMAIN: !GetAtt CloudFrontDistribution.DomainName
+      Code:
+        S3Bucket: !ImportValue 
+          Fn::Sub: '${AppName}-LambdaDeploymentBucket'
+        S3Key: lambda-packages/mediaconvert-completion-handler.zip
+
+  # EventBridge Rule for MediaConvert Job Status Changes
+  MediaConvertEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${AppName}-MediaConvertJobStatusRule'
+      Description: 'Capture MediaConvert job status changes'
+      EventPattern:
+        source:
+          - 'aws.mediaconvert'
+        detail-type:
+          - 'MediaConvert Job State Change'
+        detail:
+          status:
+            - 'COMPLETE'
+            - 'ERROR'
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt MediaConvertCompletionLambda.Arn
+          Id: 'MediaConvertCompletionTarget'
+
+  # Permission for EventBridge to invoke the completion Lambda
+  MediaConvertCompletionLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref MediaConvertCompletionLambda
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt MediaConvertEventRule.Arn
+
+Outputs:
+  UploadBucketName:
+    Description: Name of the S3 bucket for video uploads
+    Value: !Ref UploadBucket
+    Export:
+      Name: !Sub '${AppName}-VideoUploadBucket'
+
+  UploadBucketArn:
+    Description: ARN of the S3 bucket for video uploads
+    Value: !GetAtt UploadBucket.Arn
+    Export:
+      Name: !Sub '${AppName}-VideoUploadBucketArn'
+
+  ContentBucketName:
+    Description: Name of the S3 bucket for processed content
+    Value: !Ref ContentBucket
+    Export:
+      Name: !Sub '${AppName}-VideoContentBucket'
+
+  ContentBucketArn:
+    Description: ARN of the S3 bucket for processed content
+    Value: !GetAtt ContentBucket.Arn
+    Export:
+      Name: !Sub '${AppName}-VideoContentBucketArn'
+
+  WebBucketName:
+    Description: Name of the S3 bucket for web hosting
+    Value: !Ref WebBucket
+    Export:
+      Name: !Sub '${AppName}-WebBucketName'
+
+  CloudFrontDomainName:
+    Description: CloudFront distribution domain name
+    Value: !GetAtt CloudFrontDistribution.DomainName
+    Export:
+      Name: !Sub '${AppName}-CloudFrontDomainName'
+
+  CloudFrontDistributionId:
+    Description: CloudFront distribution ID
+    Value: !Ref CloudFrontDistribution
+    Export:
+      Name: !Sub '${AppName}-CloudFrontDistributionId'
+
+  MediaConvertRoleArn:
+    Description: ARN of the MediaConvert IAM Role
+    Value: !GetAtt MediaConvertRole.Arn
+    Export:
+      Name: !Sub '${AppName}-MediaConvertRoleArn'
+
+  MediaConvertJobLambdaArn:
+    Description: ARN of the MediaConvert Lambda Function
+    Value: !GetAtt MediaConvertJobLambda.Arn
+    Export:
+      Name: !Sub '${AppName}-MediaConvertJobLambdaArn'
+
+  VideoMetadataTableName:
+    Description: Name of the DynamoDB table for video metadata
+    Value: !Ref VideoMetadataTable
+    Export:
+      Name: !Sub '${AppName}-VideoMetadataTableName'
+
+  VideoMetadataTableArn:
+    Description: ARN of the DynamoDB table for video metadata
+    Value: !GetAtt VideoMetadataTable.Arn
+    Export:
+      Name: !Sub '${AppName}-VideoMetadataTableArn'
+
+  MediaConvertCompletionLambdaArn:
+    Description: ARN of the MediaConvert Completion Handler Lambda Function
+    Value: !GetAtt MediaConvertCompletionLambda.Arn
+    Export:
+      Name: !Sub '${AppName}-MediaConvertCompletionLambdaArn'
+
+  MediaConvertEventRuleArn:
+    Description: ARN of the EventBridge rule for MediaConvert events
+    Value: !GetAtt MediaConvertEventRule.Arn
+    Export:
+      Name: !Sub '${AppName}-MediaConvertEventRuleArn'

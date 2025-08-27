@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Streaming Platform</title>
+    <link rel="stylesheet" href="toast.css">
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://sdk.amazonaws.com/js/aws-sdk-2.1.24.min.js"></script>
+    <script src="https://unpkg.com/amazon-cognito-identity-js@6.3.12/dist/amazon-cognito-identity.min.js"></script>
+</head>
+<body>
+    <div id="app">
+        <!-- Navigation -->
+        <nav class="navbar">
+            <div class="nav-container">
+                <h1 class="nav-logo">StreamFlex</h1>
+                <div class="nav-menu">
+                    <div id="user-info" class="user-info" style="display: none;">
+                        <span id="user-name"></span>
+                        <span id="subscription-badge" class="subscription-badge"></span>
+                        <button id="logout-btn" class="btn btn-secondary">Logout</button>
+                    </div>
+                    <div id="auth-buttons" class="auth-buttons">
+                        <button id="login-btn" class="btn btn-primary">Login</button>
+                        <button id="signup-btn" class="btn btn-secondary">Sign Up</button>
+                    </div>
+                </div>
+            </div>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Authentication Forms -->
+            <div id="auth-section" class="auth-section">
+                <!-- Login Form -->
+                <div id="login-form" class="auth-form" style="display: none;">
+                    <h2>Login</h2>
+                    <form id="login-form-element">
+                        <div class="form-group">
+                            <label for="login-email">Email:</label>
+                            <input type="email" id="login-email" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="login-password">Password:</label>
+                            <input type="password" id="login-password" required>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Login</button>
+                        <button type="button" id="show-signup" class="btn btn-link">Don't have an account? Sign up</button>
+                    </form>
+                </div>
+
+                <!-- Signup Form -->
+                <div id="signup-form" class="auth-form" style="display: none;">
+                    <h2>Sign Up</h2>
+                    <form id="signup-form-element">
+                        <div class="form-group">
+                            <label for="signup-email">Email:</label>
+                            <input type="email" id="signup-email" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="signup-password">Password:</label>
+                            <input type="password" id="signup-password" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="subscription-plan">Choose Your Plan:</label>
+                            <select id="subscription-plan" required>
+                                <option value="">Select a plan</option>
+                                <option value="free">Free - Free (10s previews)</option>
+                                <option value="standard">Standard - $4.99/month (480p full videos)</option>
+                                <option value="premium">Premium - $9.99/month (720p/1080p full videos)</option>
+                            </select>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Sign Up</button>
+                        <button type="button" id="show-login" class="btn btn-link">Already have an account? Login</button>
+                    </form>
+                </div>
+
+                <!-- Email Verification Form -->
+                <div id="verification-form" class="auth-form" style="display: none;">
+                    <h2>Verify Your Email</h2>
+                    <p>Please enter the verification code sent to your email.</p>
+                    <form id="verification-form-element">
+                        <div class="form-group">
+                            <label for="verification-code">Verification Code:</label>
+                            <input type="text" id="verification-code" required>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Verify</button>
+                        <button type="button" id="resend-code-btn" class="btn btn-secondary">Resend Code</button>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Video Library Section -->
+            <div id="video-library" class="video-library" style="display: none;">
+                <div class="library-header">
+                    <h2>Video Library</h2>
+                    <div class="library-controls">
+                        <div class="search-box">
+                            <input type="text" id="search-input" placeholder="Search videos...">
+                            <button id="search-btn" class="btn btn-secondary">Search</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Video Grid -->
+                <div id="video-grid" class="video-grid">
+                    <!-- Videos will be loaded here dynamically -->
+                </div>
+
+                <!-- Pagination -->
+                <div id="pagination" class="pagination">
+                    <!-- Pagination controls will be loaded here -->
+                </div>
+
+                <!-- Loading Indicator -->
+                <div id="loading" class="loading" style="display: none;">
+                    <div class="spinner"></div>
+                    <p>Loading videos...</p>
+                </div>
+            </div>
+
+            <!-- Video Player Section -->
+            <div id="video-player-section" class="video-player-section" style="display: none;">
+                <div class="player-header">
+                    <button id="back-to-library" class="btn btn-secondary">← Back to Library</button>
+                    <div class="video-info">
+                        <h2 id="current-video-title">Video Title</h2>
+                        <p id="current-video-description">Video description</p>
+                    </div>
+                    <div class="quality-controls">
+                        <div id="current-quality-indicator" class="quality-indicator">
+                            <span class="quality-label">Quality:</span>
+                            <span id="current-quality-value" class="quality-value">480p</span>
+                        </div>
+                        <select id="quality-selector" class="quality-selector" style="display: none;">
+                            <!-- Quality options will be populated dynamically -->
+                        </select>
+                    </div>
+                </div>
+
+                <div class="video-container">
+                    <video id="main-video" controls>
+                        Your browser does not support the video tag.
+                    </video>
+                    
+                    <!-- Upgrade Overlay for Free Users -->
+                    <div id="upgrade-overlay" class="upgrade-overlay" style="display: none;">
+                        <div class="upgrade-content">
+                            <h3>Upgrade to see the full video!</h3>
+                            <p>You've reached the 10-second preview limit.</p>
+                            <div class="upgrade-options">
+                                <button class="btn btn-primary" data-plan="standard">
+                                    Standard Plan - $4.99/month<br>
+                                    <small>Full videos in 480p quality</small>
+                                </button>
+                                <button class="btn btn-premium" data-plan="premium">
+                                    Premium Plan - $9.99/month<br>
+                                    <small>Full videos with HD quality options</small>
+                                </button>
+                            </div>
+                            <button class="btn btn-secondary" onclick="videoPlayer.hideFreeUpgradeOverlay()">
+                                Close
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Toast Notifications -->
+        <div id="toast-container" class="toast-container"></div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="utils.js"></script>
+    <script src="config.js"></script>
+    <script src="auth.js"></script>
+    <script src="video-list.js"></script>
+    <script src="player.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

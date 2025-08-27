@@ -1,0 +1,33 @@
+{
+  "name": "video-streaming-frontend",
+  "version": "1.0.0",
+  "description": "Frontend for Video Streaming Platform with AWS",
+  "main": "app.js",
+  "scripts": {
+    "start": "http-server . -p 8000 -c-1",
+    "build": "echo 'No build process needed for vanilla JS'",
+    "test": "echo 'No tests specified'",
+    "serve": "python -m http.server 8000"
+  },
+  "keywords": [
+    "video",
+    "streaming",
+    "aws",
+    "cognito",
+    "s3",
+    "cloudfront"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "devDependencies": {
+    "http-server": "^14.1.1"
+  },
+  "dependencies": {
+    "aws-sdk": "^2.1.24"
+  },
+  "browserslist": [
+    "> 1%",
+    "last 2 versions",
+    "not dead"
+  ]
+}

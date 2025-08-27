@@ -1,0 +1,61 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'S3 Bucket for Lambda Deployment Packages'
+
+Parameters:
+  AppName:
+    Type: String
+    Default: VideoStreamingApp
+    Description: Name of the application
+
+Resources:
+  # S3 Bucket for Lambda deployment packages
+  LambdaDeploymentBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'videostreamingapp-lambda-deployments-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  # Bucket policy to allow CloudFormation access
+  LambdaDeploymentBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref LambdaDeploymentBucket
+      PolicyDocument:
+        Statement:
+          - Sid: AllowCloudFormationAccess
+            Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action:
+              - s3:GetObject
+            Resource: !Sub '${LambdaDeploymentBucket.Arn}/*'
+          - Sid: AllowLambdaAccess
+            Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action:
+              - s3:GetObject
+            Resource: !Sub '${LambdaDeploymentBucket.Arn}/*'
+
+Outputs:
+  LambdaDeploymentBucketName:
+    Description: Name of the Lambda deployment bucket
+    Value: !Ref LambdaDeploymentBucket
+    Export:
+      Name: !Sub '${AppName}-LambdaDeploymentBucket'
+
+  LambdaDeploymentBucketArn:
+    Description: ARN of the Lambda deployment bucket
+    Value: !GetAtt LambdaDeploymentBucket.Arn
+    Export:
+      Name: !Sub '${AppName}-LambdaDeploymentBucketArn'

@@ -1,0 +1,15 @@
+# AWS SDK for Python
+boto3>=1.34.0
+botocore>=1.34.0
+
+# JSON handling and utilities
+python-json-logger>=2.0.7
+
+# HTTP requests (if needed for external APIs)
+requests>=2.31.0
+
+# Date/time utilities
+python-dateutil>=2.8.2
+
+# JWT token handling (without cryptography dependency)
+PyJWT>=2.8.0

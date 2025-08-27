@@ -1,0 +1,293 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'API Gateway and Lambda Backend for Video Streaming App'
+
+Parameters:
+  AppName:
+    Type: String
+    Default: VideoStreamingApp
+    Description: Name of the application
+
+Resources:
+  # API Gateway
+  VideoStreamingAPI:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub '${AppName}-API'
+      Description: API for Video Streaming Application
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  # API Gateway Authorizer
+  CognitoAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      Name: CognitoAuthorizer
+      Type: COGNITO_USER_POOLS
+      IdentitySource: method.request.header.Authorization
+      RestApiId: !Ref VideoStreamingAPI
+      ProviderARNs:
+        - !Sub 
+          - 'arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${UserPoolId}'
+          - UserPoolId: !ImportValue 
+              Fn::Sub: '${AppName}-UserPoolId'
+
+  # Lambda execution role
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: VideoStreamingPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:GeneratePresignedUrl
+                Resource:
+                  - !Sub 
+                    - 'arn:aws:s3:::${UploadBucket}/*'
+                    - UploadBucket: !ImportValue 
+                        Fn::Sub: '${AppName}-VideoUploadBucket'
+                  - !Sub 
+                    - 'arn:aws:s3:::${ContentBucket}/*'
+                    - ContentBucket: !ImportValue 
+                        Fn::Sub: '${AppName}-VideoContentBucket'
+              - Effect: Allow
+                Action:
+                  - cloudfront:CreateInvalidation
+                  - cloudfront:GetDistribution
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - cognito-idp:AdminGetUser
+                  - cognito-idp:AdminUpdateUserAttributes
+                Resource: !Sub 
+                  - 'arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${UserPoolId}'
+                  - UserPoolId: !ImportValue 
+                      Fn::Sub: '${AppName}-UserPoolId'
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                Resource:
+                  - !Sub 
+                    - 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}'
+                    - TableName: !ImportValue 'VideoStreamingApp-VideoMetadataTableName'
+                  - !Sub 
+                    - 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TableName}/index/*'
+                    - TableName: !ImportValue 'VideoStreamingApp-VideoMetadataTableName'
+
+  # Lambda function for video streaming
+  VideoStreamLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AppName}-VideoStream'
+      Runtime: python3.9
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !ImportValue 
+          Fn::Sub: '${AppName}-LambdaDeploymentBucket'
+        S3Key: lambda-packages/video-streamer.zip
+      Environment:
+        Variables:
+          USER_POOL_ID: !ImportValue 
+            Fn::Sub: '${AppName}-UserPoolId'
+          CLOUDFRONT_DOMAIN: !ImportValue 
+            Fn::Sub: '${AppName}-CloudFrontDomainName'
+          DYNAMODB_TABLE_NAME: !ImportValue 
+            Fn::Sub: '${AppName}-VideoMetadataTableName'
+
+  # Video Listing Lambda Function
+  VideoListLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${AppName}-VideoList'
+      Runtime: python3.9
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !ImportValue 
+          Fn::Sub: '${AppName}-LambdaDeploymentBucket'
+        S3Key: lambda-packages/video-lister.zip
+      Environment:
+        Variables:
+          DYNAMODB_TABLE_NAME: !ImportValue 
+            Fn::Sub: '${AppName}-VideoMetadataTableName'
+      Timeout: 30
+
+  # API Gateway Resources and Methods
+  VideosResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref VideoStreamingAPI
+      ParentId: !GetAtt VideoStreamingAPI.RootResourceId
+      PathPart: videos
+
+  StreamResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref VideoStreamingAPI
+      ParentId: !Ref VideosResource
+      PathPart: stream
+
+  ListResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref VideoStreamingAPI
+      ParentId: !Ref VideosResource
+      PathPart: list
+
+  VideoIdResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref VideoStreamingAPI
+      ParentId: !Ref StreamResource
+      PathPart: '{videoId}'
+
+  # Stream Method
+  StreamMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref VideoStreamingAPI
+      ResourceId: !Ref VideoIdResource
+      HttpMethod: GET
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${VideoStreamLambda.Arn}/invocations'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+
+  # Video List Method
+  ListMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref VideoStreamingAPI
+      ResourceId: !Ref ListResource
+      HttpMethod: GET
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref CognitoAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${VideoListLambda.Arn}/invocations'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+
+  # CORS Options Methods
+  StreamOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref VideoStreamingAPI
+      ResourceId: !Ref VideoIdResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+              method.response.header.Access-Control-Allow-Methods: "'OPTIONS,GET'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  ListOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref VideoStreamingAPI
+      ResourceId: !Ref ListResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,Authorization'"
+              method.response.header.Access-Control-Allow-Methods: "'OPTIONS,GET'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # Lambda Permissions
+  StreamLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref VideoStreamLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${VideoStreamingAPI}/*/*'
+
+  ListLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref VideoListLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${VideoStreamingAPI}/*/*'
+
+  # API Deployment
+  APIDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - StreamMethod
+      - ListMethod
+      - StreamOptionsMethod
+      - ListOptionsMethod
+    Properties:
+      RestApiId: !Ref VideoStreamingAPI
+      StageName: prod
+
+Outputs:
+  APIGatewayURL:
+    Description: API Gateway URL
+    Value: !Sub 'https://${VideoStreamingAPI}.execute-api.${AWS::Region}.amazonaws.com/prod'
+    Export:
+      Name: !Sub '${AppName}-APIGatewayURL'
+  
+  VideoStreamLambdaArn:
+    Description: Video Stream Lambda ARN
+    Value: !GetAtt VideoStreamLambda.Arn
+    Export:
+      Name: !Sub '${AppName}-VideoStreamLambdaArn'
